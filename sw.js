@@ -1,13 +1,13 @@
 const CACHE_NAME = 'terranio-v2';
 const ASSETS = [
-  '/',
-  '/index.html',
-  '/app-component.jsx',
-  '/manifest.json',
-  '/icon-192.png',
-  '/icon-512.png',
-  '/icon-180.png',
-  '/favicon-32.png',
+  '/terranio/',
+  '/terranio/index.html',
+  '/terranio/app-component.jsx',
+  '/terranio/manifest.json',
+  '/terranio/icon-192.png',
+  '/terranio/icon-512.png',
+  '/terranio/icon-180.png',
+  '/terranio/favicon-32.png',
 ];
 
 // Install: cache core assets
