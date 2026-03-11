@@ -735,6 +735,175 @@ const EXPLORER_AVATARS = [
   { id: "treasure", emoji: "💎", label: "Treasure Hunter" },
 ];
 
+// ─── FIREBASE CONFIG ─────────────────────────────────────────────────────
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBdfM8G7nXHkIPqrURmGoPzOZ1T8SLVNcg",
+  authDomain: "terranio-d4513.firebaseapp.com",
+  databaseURL: "https://terranio-d4513-default-rtdb.firebaseio.com",
+  projectId: "terranio-d4513",
+  storageBucket: "terranio-d4513.firebasestorage.app",
+  messagingSenderId: "351958585671",
+  appId: "1:351958585671:web:941470eb652dcb6e91bc62",
+};
+
+// Firebase is loaded lazily — only when the user creates/joins a group
+let _db = null;
+let _firebaseReady = null;
+
+function loadFirebaseSDK() {
+  if (typeof firebase !== "undefined" && firebase.database) {
+    _firebaseReady = Promise.resolve();
+    return _firebaseReady;
+  }
+  if (_firebaseReady) return _firebaseReady;
+  _firebaseReady = new Promise((resolve, reject) => {
+    const scripts = [
+      "https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js",
+      "https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js",
+    ];
+    let loaded = 0;
+    const loadNext = () => {
+      if (loaded >= scripts.length) { resolve(); return; }
+      const s = document.createElement("script");
+      s.src = scripts[loaded];
+      s.onload = () => { loaded++; loadNext(); };
+      s.onerror = () => { _firebaseReady = null; reject(new Error("offline")); };
+      document.head.appendChild(s);
+    };
+    loadNext();
+  });
+  return _firebaseReady;
+}
+
+async function getFirebaseDB() {
+  if (_db) return _db;
+  await loadFirebaseSDK();
+  if (typeof firebase === "undefined") throw new Error("offline");
+  const app = firebase.apps.length ? firebase.app() : firebase.initializeApp(FIREBASE_CONFIG);
+  _db = firebase.database(app);
+  return _db;
+}
+
+function generateGroupCode() {
+  const num = Math.floor(1000 + Math.random() * 9000);
+  return "TERRA-" + num;
+}
+
+// ─── FIREBASE GROUP HOOK ─────────────────────────────────────────────────
+function useFirebaseGroup() {
+  const [groupCode, setGroupCode] = useState(null);
+  const [groupName, setGroupName] = useState("");
+  const [groupMembers, setGroupMembers] = useState([]);
+  const [groupLoading, setGroupLoading] = useState(false);
+  const [groupError, setGroupError] = useState("");
+  const listenerRef = useRef(null);
+
+  // Load saved group from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("terranio_group");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.code) {
+          setGroupCode(parsed.code);
+          setGroupName(parsed.name || "");
+        }
+      }
+    } catch (e) {}
+  }, []);
+
+  // Subscribe to group data when groupCode changes
+  useEffect(() => {
+    if (!groupCode) {
+      setGroupMembers([]);
+      if (listenerRef.current) { listenerRef.current(); listenerRef.current = null; }
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const db = await getFirebaseDB();
+        if (cancelled) return;
+        const ref = db.ref("groups/" + groupCode);
+        const handler = ref.on("value", (snapshot) => {
+          const data = snapshot.val();
+          if (data) {
+            setGroupName(data.name || "");
+            const members = data.members ? Object.values(data.members) : [];
+            setGroupMembers(members.sort((a, b) => (b.xp || 0) - (a.xp || 0)));
+          } else {
+            setGroupMembers([]);
+          }
+        });
+        listenerRef.current = () => ref.off("value", handler);
+      } catch (e) { console.error("Firebase subscribe failed:", e); }
+    })();
+    return () => { cancelled = true; if (listenerRef.current) { listenerRef.current(); listenerRef.current = null; } };
+  }, [groupCode]);
+
+  const createGroup = useCallback(async (name) => {
+    setGroupLoading(true); setGroupError("");
+    try {
+      const db = await getFirebaseDB();
+      let code = generateGroupCode();
+      const snap = await db.ref("groups/" + code).once("value");
+      if (snap.exists()) code = generateGroupCode();
+      await db.ref("groups/" + code).set({ name: name, createdAt: Date.now(), members: {} });
+      setGroupCode(code); setGroupName(name);
+      localStorage.setItem("terranio_group", JSON.stringify({ code, name }));
+      setGroupLoading(false);
+      return code;
+    } catch (e) {
+      setGroupError(e.message || "Failed to create group");
+      setGroupLoading(false);
+      return null;
+    }
+  }, []);
+
+  const joinGroup = useCallback(async (code) => {
+    setGroupLoading(true); setGroupError("");
+    const normalized = code.trim().toUpperCase();
+    try {
+      const db = await getFirebaseDB();
+      const snap = await db.ref("groups/" + normalized).once("value");
+      if (!snap.exists()) throw new Error("Group not found. Check the code and try again.");
+      const data = snap.val();
+      setGroupCode(normalized); setGroupName(data.name || "");
+      localStorage.setItem("terranio_group", JSON.stringify({ code: normalized, name: data.name || "" }));
+      setGroupLoading(false);
+      return true;
+    } catch (e) {
+      setGroupError(e.message || "Failed to join group");
+      setGroupLoading(false);
+      return false;
+    }
+  }, []);
+
+  const syncProfile = useCallback(async (profile) => {
+    if (!groupCode || !profile) return;
+    try {
+      const db = await getFirebaseDB();
+      const memberId = profile.id.replace(/[.#$/\[\]]/g, "_");
+      await db.ref("groups/" + groupCode + "/members/" + memberId).set({
+        name: profile.name,
+        avatarId: profile.avatarId,
+        xp: profile.xp,
+        quizCount: profile.quizCount,
+        bestStreak: profile.bestStreak,
+        level: getExplorerLevel(profile.xp).name,
+        lastActive: Date.now(),
+      });
+    } catch (e) { console.error("Sync failed:", e); }
+  }, [groupCode]);
+
+  const leaveGroup = useCallback(() => {
+    setGroupCode(null); setGroupName(""); setGroupMembers([]);
+    localStorage.removeItem("terranio_group");
+  }, []);
+
+  return { groupCode, groupName, groupMembers, groupLoading, groupError, createGroup, joinGroup, syncProfile, leaveGroup, setGroupError };
+}
+
 // ─── PROFILE HELPERS ─────────────────────────────────────────────────────
 function useProfiles() {
   const [profiles, setProfiles] = useState([]);
@@ -861,6 +1030,10 @@ function ProfileSwitcher({ profiles, activeProfile, onSwitch, onAdd, onManage })
 // ─── MAIN APP ───────────────────────────────────────────────────────────────
 function GeographyApp() {
   const { profiles, activeProfile, activeId, loaded, addProfile, switchProfile, updateActiveXP, deleteProfile } = useProfiles();
+  const { groupCode, groupName, groupMembers, groupLoading, groupError, createGroup, joinGroup, syncProfile, leaveGroup, setGroupError } = useFirebaseGroup();
+  // Group creation/join input state
+  const [groupInputMode, setGroupInputMode] = useState(null); // null | "create" | "join"
+  const [groupInputValue, setGroupInputValue] = useState("");
   const [screen, setScreen] = useState("home");
   const [exploreRegion, setExploreRegion] = useState(null);
   const [exploreSearch, setExploreSearch] = useState("");
@@ -954,6 +1127,11 @@ function GeographyApp() {
         setLevelUpData(newLevel);
       }
       updateActiveXP(finalXP, maxStreak);
+      // Sync to Firebase group if joined
+      if (groupCode && activeProfile) {
+        const updatedProfile = { ...activeProfile, xp: (activeProfile.xp || 0) + finalXP, quizCount: (activeProfile.quizCount || 0) + 1, bestStreak: Math.max(activeProfile.bestStreak || 0, maxStreak) };
+        syncProfile(updatedProfile);
+      }
       setScreen("results");
     } else {
       setCurrentQ(c => c + 1); setSelected(null); setAnswered(false);
@@ -1143,8 +1321,44 @@ function GeographyApp() {
 
   // ─── LEADERBOARD ────────────────────────────────────────────────────────
   if (screen === "leaderboard") {
-    const ranked = [...profiles].sort((a, b) => b.xp - a.xp);
     const medals = ["🥇", "🥈", "🥉"];
+
+    const renderMemberRow = (p, i) => {
+      const av = EXPLORER_AVATARS.find(a => a.id === p.avatarId) || EXPLORER_AVATARS[0];
+      const level = getExplorerLevel(p.xp || 0);
+      const isMe = p.name === activeProfile?.name;
+      const rank = i + 1;
+      return (
+        <div key={p.name + i} style={{
+          display: "flex", alignItems: "center", gap: 14, padding: "16px 20px", borderRadius: 18,
+          background: isMe ? "rgba(34,197,94,0.08)" : rank <= 3 ? "rgba(249,115,22,0.04)" : "rgba(255,255,255,0.03)",
+          border: `2px solid ${isMe ? "rgba(34,197,94,0.25)" : rank <= 3 ? "rgba(249,115,22,0.12)" : "rgba(255,255,255,0.06)"}`,
+          animation: `slideUp 0.3s ${i * 0.06}s ease-out both`,
+        }}>
+          <div style={{ width: 36, textAlign: "center", flexShrink: 0 }}>
+            {rank <= 3 ? <span style={{ fontSize: 28 }}>{medals[rank - 1]}</span>
+              : <span style={{ fontSize: 20, fontWeight: 800, color: "#475569", fontFamily: "'Lilita One', sans-serif" }}>{rank}</span>}
+          </div>
+          <span style={{ fontSize: 32, flexShrink: 0 }}>{av.emoji}</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 17, fontWeight: 700, color: "#F1F5F9" }}>{p.name}</span>
+              {isMe && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 99, background: "rgba(34,197,94,0.2)", color: "#22C55E", fontWeight: 700 }}>YOU</span>}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
+              <span style={{ fontSize: 13 }}>{level.icon}</span>
+              <span style={{ fontSize: 12, color: level.color, fontWeight: 600 }}>{level.name}</span>
+              <span style={{ fontSize: 11, color: "#64748B" }}>· 🎮 {p.quizCount || 0} · 🔥 {p.bestStreak || 0}</span>
+            </div>
+          </div>
+          <div style={{ textAlign: "right", flexShrink: 0 }}>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#F59E0B", fontFamily: "'Lilita One', sans-serif" }}>{p.xp || 0}</div>
+            <div style={{ fontSize: 11, color: "#64748B" }}>XP</div>
+          </div>
+        </div>
+      );
+    };
+
     return (
       <div style={styles.app}>
         <style>{globalCSS}</style>
@@ -1153,63 +1367,139 @@ function GeographyApp() {
           <h2 style={{ fontFamily: "'Lilita One', sans-serif", fontSize: 22, color: "#86EFAC" }}>📊 Leaderboard</h2>
           <div style={{ width: 80 }} />
         </div>
-        <div style={{ ...styles.container, maxWidth: 520, paddingTop: 24 }}>
-          <p style={{ textAlign: "center", fontSize: 13, color: "#64748B", marginBottom: 20, lineHeight: 1.5 }}>Comparing all explorer profiles on this device. Create profiles for family members to compete!</p>
-          {ranked.length === 0 ? (
-            <div style={{ textAlign: "center", padding: 40, color: "#64748B" }}>No explorers yet! Create a profile to get started.</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {ranked.map((p, i) => {
-                const av = EXPLORER_AVATARS.find(a => a.id === p.avatarId) || EXPLORER_AVATARS[0];
-                const level = getExplorerLevel(p.xp);
-                const isMe = p.id === activeId;
-                const rank = i + 1;
-                return (
-                  <div key={p.id} style={{
-                    display: "flex", alignItems: "center", gap: 14, padding: "16px 20px",
-                    borderRadius: 18,
-                    background: isMe ? "rgba(34,197,94,0.08)" : rank <= 3 ? "rgba(249,115,22,0.04)" : "rgba(255,255,255,0.03)",
-                    border: `2px solid ${isMe ? "rgba(34,197,94,0.25)" : rank <= 3 ? "rgba(249,115,22,0.12)" : "rgba(255,255,255,0.06)"}`,
-                    animation: `slideUp 0.3s ${i * 0.06}s ease-out both`,
-                  }}>
-                    {/* Rank */}
-                    <div style={{ width: 36, textAlign: "center", flexShrink: 0 }}>
-                      {rank <= 3 ? (
-                        <span style={{ fontSize: 28 }}>{medals[rank - 1]}</span>
-                      ) : (
-                        <span style={{ fontSize: 20, fontWeight: 800, color: "#475569", fontFamily: "'Lilita One', sans-serif" }}>{rank}</span>
-                      )}
-                    </div>
-                    {/* Avatar */}
-                    <span style={{ fontSize: 32, flexShrink: 0 }}>{av.emoji}</span>
-                    {/* Name + Level */}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 17, fontWeight: 700, color: "#F1F5F9" }}>{p.name}</span>
-                        {isMe && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 99, background: "rgba(34,197,94,0.2)", color: "#22C55E", fontWeight: 700 }}>YOU</span>}
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
-                        <span style={{ fontSize: 13 }}>{level.icon}</span>
-                        <span style={{ fontSize: 12, color: level.color, fontWeight: 600 }}>{level.name}</span>
-                        <span style={{ fontSize: 11, color: "#64748B" }}>· 🎮 {p.quizCount} · 🔥 {p.bestStreak}</span>
+        <div style={{ ...styles.container, maxWidth: 520, paddingTop: 16 }}>
+
+          {/* No group yet — show create/join */}
+          {!groupCode && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 20, paddingTop: 24 }}>
+              <div style={{ fontSize: 56, marginBottom: 4 }}>👨‍👩‍👧‍👦</div>
+              <h3 style={{ fontFamily: "'Lilita One', sans-serif", fontSize: 24, color: "#F1F5F9" }}>Compete Together!</h3>
+              <p style={{ fontSize: 15, color: "#94A3B8", textAlign: "center", maxWidth: 320, lineHeight: 1.5 }}>Create a group and share the code with family & friends. Scores sync across all devices in real-time!</p>
+
+              {groupError && <div style={{ padding: "12px 20px", borderRadius: 14, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", color: "#F87171", fontSize: 14, textAlign: "center", width: "100%", maxWidth: 320, lineHeight: 1.5 }}>
+                {groupError === "offline" ? "Leaderboard requires an internet connection. Please open Terranio from your home screen or visit crumystone.github.io/terranio" : groupError}
+              </div>}
+
+              {/* Create Group Flow */}
+              {groupInputMode !== "join" && (
+                <>
+                  {groupInputMode === "create" ? (
+                    <div style={{ width: "100%", maxWidth: 320, display: "flex", flexDirection: "column", gap: 12 }}>
+                      <input
+                        type="text" placeholder="Group name (e.g., The Smiths)" value={groupInputValue}
+                        onChange={e => setGroupInputValue(e.target.value.slice(0, 30))} autoFocus
+                        style={{ width: "100%", padding: "16px 20px", borderRadius: 14, border: "2px solid rgba(34,197,94,0.3)", background: "rgba(255,255,255,0.05)", color: "#F1F5F9", fontSize: 17, fontFamily: "'Fredoka', sans-serif", outline: "none", textAlign: "center" }}
+                        onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.6)"} onBlur={e => e.target.style.borderColor = "rgba(34,197,94,0.3)"}
+                        onKeyDown={async e => { if (e.key === "Enter" && groupInputValue.trim()) { const code = await createGroup(groupInputValue.trim()); if (code && activeProfile) syncProfile(activeProfile); setGroupInputValue(""); setGroupInputMode(null); }}}
+                      />
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <button onClick={() => { setGroupInputMode(null); setGroupInputValue(""); setGroupError(""); }} style={{ flex: 1, padding: "14px", borderRadius: 14, background: "rgba(255,255,255,0.06)", border: "1.5px solid rgba(255,255,255,0.1)", color: "#94A3B8", fontSize: 16, fontWeight: 600, cursor: "pointer", fontFamily: "'Fredoka', sans-serif" }}>Cancel</button>
+                        <button disabled={!groupInputValue.trim() || groupLoading} onClick={async () => {
+                          const code = await createGroup(groupInputValue.trim());
+                          if (code && activeProfile) syncProfile(activeProfile);
+                          setGroupInputValue(""); setGroupInputMode(null);
+                        }} style={{ flex: 1, padding: "14px", borderRadius: 14, background: groupInputValue.trim() ? "linear-gradient(135deg, #22C55E, #16A34A)" : "rgba(255,255,255,0.06)", border: "none", color: groupInputValue.trim() ? "#fff" : "#475569", fontSize: 16, fontWeight: 700, cursor: groupInputValue.trim() ? "pointer" : "default", fontFamily: "'Fredoka', sans-serif" }}>
+                          {groupLoading ? "Creating..." : "Create"}
+                        </button>
                       </div>
                     </div>
-                    {/* XP */}
-                    <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      <div style={{ fontSize: 20, fontWeight: 800, color: "#F59E0B", fontFamily: "'Lilita One', sans-serif" }}>{p.xp}</div>
-                      <div style={{ fontSize: 11, color: "#64748B" }}>XP</div>
+                  ) : (
+                    <button onClick={() => { setGroupInputMode("create"); setGroupInputValue(""); setGroupError(""); }} style={{
+                      width: "100%", maxWidth: 320, padding: "18px 24px", borderRadius: 18,
+                      background: "linear-gradient(135deg, #22C55E, #16A34A)", border: "none",
+                      color: "#fff", fontSize: 18, fontWeight: 700, cursor: "pointer",
+                      fontFamily: "'Fredoka', sans-serif", boxShadow: "0 4px 20px rgba(34,197,94,0.3)",
+                    }}>Create a Group</button>
+                  )}
+                </>
+              )}
+
+              {groupInputMode !== "create" && groupInputMode !== "join" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 16, width: "100%", maxWidth: 320 }}>
+                  <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.1)" }} />
+                  <span style={{ fontSize: 13, color: "#64748B" }}>or</span>
+                  <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.1)" }} />
+                </div>
+              )}
+
+              {/* Join Group Flow */}
+              {groupInputMode !== "create" && (
+                <>
+                  {groupInputMode === "join" ? (
+                    <div style={{ width: "100%", maxWidth: 320, display: "flex", flexDirection: "column", gap: 12 }}>
+                      <input
+                        type="text" placeholder="TERRA-1234" value={groupInputValue}
+                        onChange={e => setGroupInputValue(e.target.value.toUpperCase().slice(0, 10))} autoFocus
+                        style={{ width: "100%", padding: "16px 20px", borderRadius: 14, border: "2px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.05)", color: "#F1F5F9", fontSize: 17, fontFamily: "'Fredoka', sans-serif", outline: "none", textAlign: "center", letterSpacing: 2 }}
+                        onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.5)"} onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.15)"}
+                        onKeyDown={async e => { if (e.key === "Enter" && groupInputValue.trim()) { const ok = await joinGroup(groupInputValue.trim()); if (ok && activeProfile) syncProfile(activeProfile); if (ok) { setGroupInputValue(""); setGroupInputMode(null); } }}}
+                      />
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <button onClick={() => { setGroupInputMode(null); setGroupInputValue(""); setGroupError(""); }} style={{ flex: 1, padding: "14px", borderRadius: 14, background: "rgba(255,255,255,0.06)", border: "1.5px solid rgba(255,255,255,0.1)", color: "#94A3B8", fontSize: 16, fontWeight: 600, cursor: "pointer", fontFamily: "'Fredoka', sans-serif" }}>Cancel</button>
+                        <button disabled={!groupInputValue.trim() || groupLoading} onClick={async () => {
+                          const ok = await joinGroup(groupInputValue.trim());
+                          if (ok && activeProfile) syncProfile(activeProfile);
+                          if (ok) { setGroupInputValue(""); setGroupInputMode(null); }
+                        }} style={{ flex: 1, padding: "14px", borderRadius: 14, background: groupInputValue.trim() ? "linear-gradient(135deg, #22C55E, #16A34A)" : "rgba(255,255,255,0.06)", border: "none", color: groupInputValue.trim() ? "#fff" : "#475569", fontSize: 16, fontWeight: 700, cursor: groupInputValue.trim() ? "pointer" : "default", fontFamily: "'Fredoka', sans-serif" }}>
+                          {groupLoading ? "Joining..." : "Join"}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  ) : (
+                    <button onClick={() => { setGroupInputMode("join"); setGroupInputValue(""); setGroupError(""); }} style={{
+                      width: "100%", maxWidth: 320, padding: "18px 24px", borderRadius: 18,
+                      background: "rgba(255,255,255,0.04)", border: "2px solid rgba(255,255,255,0.12)",
+                      color: "#F1F5F9", fontSize: 18, fontWeight: 700, cursor: "pointer",
+                      fontFamily: "'Fredoka', sans-serif",
+                    }}>Join with Code</button>
+                  )}
+                </>
+              )}
             </div>
+          )}
+
+          {/* In a group — show group info + members */}
+          {groupCode && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, padding: "14px 18px", borderRadius: 16, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                <div>
+                  <div style={{ fontSize: 17, fontWeight: 700, color: "#F1F5F9" }}>{groupName}</div>
+                  <div style={{ fontSize: 13, color: "#64748B", marginTop: 2 }}>Code: <span style={{ color: "#22C55E", fontWeight: 700, letterSpacing: 1 }}>{groupCode}</span></div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => { if (navigator.clipboard) { navigator.clipboard.writeText(groupCode); } }} style={{
+                    padding: "8px 14px", borderRadius: 10, background: "rgba(34,197,94,0.1)",
+                    border: "1px solid rgba(34,197,94,0.2)", color: "#22C55E", fontSize: 13,
+                    fontWeight: 600, cursor: "pointer", fontFamily: "'Fredoka', sans-serif",
+                  }}>Copy</button>
+                  <button onClick={leaveGroup} style={{
+                    padding: "8px 14px", borderRadius: 10, background: "rgba(239,68,68,0.1)",
+                    border: "1px solid rgba(239,68,68,0.2)", color: "#F87171", fontSize: 13,
+                    fontWeight: 600, cursor: "pointer", fontFamily: "'Fredoka', sans-serif",
+                  }}>Leave</button>
+                </div>
+              </div>
+
+              {groupMembers.length === 0 ? (
+                <div style={{ textAlign: "center", padding: 32, color: "#64748B", fontSize: 15, lineHeight: 1.6 }}>
+                  <div style={{ fontSize: 40, marginBottom: 12 }}>🕐</div>
+                  Share the code <strong style={{ color: "#22C55E" }}>{groupCode}</strong> with family & friends to start competing!
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {groupMembers.map((p, i) => renderMemberRow(p, i))}
+                </div>
+              )}
+
+              <p style={{ textAlign: "center", fontSize: 12, color: "#475569", marginTop: 20 }}>Scores sync automatically after each quiz</p>
+            </>
           )}
 
           {/* Level Legend */}
           <div style={{ marginTop: 32, padding: "20px 24px", borderRadius: 18, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
             <h3 style={{ fontSize: 15, color: "#94A3B8", marginBottom: 14, fontWeight: 600, textAlign: "center" }}>Explorer Levels</h3>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              {EXPLORER_LEVELS.map((l, i) => (
+              {EXPLORER_LEVELS.map((l) => (
                 <div key={l.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 12, background: "rgba(255,255,255,0.02)" }}>
                   <span style={{ fontSize: 18 }}>{l.icon}</span>
                   <div>
