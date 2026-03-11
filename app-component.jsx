@@ -883,25 +883,55 @@ function useFirebaseGroup() {
     if (!groupCode || !profile) return;
     try {
       const db = await getFirebaseDB();
-      const memberId = profile.id.replace(/[.#$/\[\]]/g, "_");
+      const memberId = (profile.name + "_" + (profile.pin || "0000")).replace(/[.#$/\[\]\s]/g, "_").toLowerCase();
       await db.ref("groups/" + groupCode + "/members/" + memberId).set({
         name: profile.name,
+        pin: profile.pin || "0000",
         avatarId: profile.avatarId,
-        xp: profile.xp,
-        quizCount: profile.quizCount,
-        bestStreak: profile.bestStreak,
-        level: getExplorerLevel(profile.xp).name,
+        xp: profile.xp || 0,
+        quizCount: profile.quizCount || 0,
+        bestStreak: profile.bestStreak || 0,
+        level: getExplorerLevel(profile.xp || 0).name,
         lastActive: Date.now(),
       });
     } catch (e) { console.error("Sync failed:", e); }
   }, [groupCode]);
+
+  const signInWithPin = useCallback(async (code, memberName, pin) => {
+    setGroupLoading(true); setGroupError("");
+    try {
+      const db = await getFirebaseDB();
+      const snap = await db.ref("groups/" + code + "/members").once("value");
+      if (!snap.exists()) throw new Error("No members found in this group.");
+      const members = snap.val();
+      const match = Object.values(members).find(m => m.name === memberName && m.pin === pin);
+      if (!match) throw new Error("Incorrect PIN. Try again!");
+      setGroupLoading(false);
+      return match; // returns the full profile data from Firebase
+    } catch (e) {
+      setGroupError(e.message || "Sign in failed");
+      setGroupLoading(false);
+      return null;
+    }
+  }, []);
+
+  const getGroupMembers = useCallback(async (code) => {
+    try {
+      const db = await getFirebaseDB();
+      const snap = await db.ref("groups/" + code).once("value");
+      if (!snap.exists()) return null;
+      const data = snap.val();
+      const members = data.members ? Object.values(data.members) : [];
+      return { name: data.name, members };
+    } catch (e) { return null; }
+  }, []);
 
   const leaveGroup = useCallback(() => {
     setGroupCode(null); setGroupName(""); setGroupMembers([]);
     localStorage.removeItem("terranio_group");
   }, []);
 
-  return { groupCode, groupName, groupMembers, groupLoading, groupError, createGroup, joinGroup, syncProfile, leaveGroup, setGroupError };
+  return { groupCode, groupName, groupMembers, groupLoading, groupError, createGroup, joinGroup, syncProfile, leaveGroup, setGroupError, signInWithPin, getGroupMembers };
 }
 
 // ─── PROFILE HELPERS ─────────────────────────────────────────────────────
@@ -934,9 +964,9 @@ function useProfiles() {
 
   const activeProfile = profiles.find(p => p.id === activeId) || null;
 
-  const addProfile = useCallback(async (name, avatarId) => {
+  const addProfile = useCallback(async (name, avatarId, pin, initialXP, initialQuizCount, initialBestStreak) => {
     const id = "p_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
-    const newProfile = { id, name, avatarId, xp: 0, quizCount: 0, bestStreak: 0 };
+    const newProfile = { id, name, avatarId, pin: pin || "0000", xp: initialXP || 0, quizCount: initialQuizCount || 0, bestStreak: initialBestStreak || 0 };
     const newProfiles = [...profiles, newProfile];
     await save(newProfiles, id);
     return newProfile;
@@ -1030,7 +1060,7 @@ function ProfileSwitcher({ profiles, activeProfile, onSwitch, onAdd, onManage })
 // ─── MAIN APP ───────────────────────────────────────────────────────────────
 function GeographyApp() {
   const { profiles, activeProfile, activeId, loaded, addProfile, switchProfile, updateActiveXP, deleteProfile } = useProfiles();
-  const { groupCode, groupName, groupMembers, groupLoading, groupError, createGroup, joinGroup, syncProfile, leaveGroup, setGroupError } = useFirebaseGroup();
+  const { groupCode, groupName, groupMembers, groupLoading, groupError, createGroup, joinGroup, syncProfile, leaveGroup, setGroupError, signInWithPin, getGroupMembers } = useFirebaseGroup();
   // Group creation/join input state
   const [groupInputMode, setGroupInputMode] = useState(null); // null | "create" | "join"
   const [groupInputValue, setGroupInputValue] = useState("");
@@ -1064,7 +1094,12 @@ function GeographyApp() {
   // Profile creation state
   const [newProfileName, setNewProfileName] = useState("");
   const [newProfileAvatar, setNewProfileAvatar] = useState("pilot");
+  const [newProfilePin, setNewProfilePin] = useState("");
   const [onboardingJoinCode, setOnboardingJoinCode] = useState("");
+  const [onboardingStep, setOnboardingStep] = useState(null); // null | "enterCode" | "pickMember" | "enterPin"
+  const [onboardingGroupData, setOnboardingGroupData] = useState(null); // { name, members }
+  const [onboardingSelectedMember, setOnboardingSelectedMember] = useState(null);
+  const [onboardingPinInput, setOnboardingPinInput] = useState("");
   const [managingProfiles, setManagingProfiles] = useState(false);
 
   const startQuiz = (regions) => {
@@ -1191,6 +1226,9 @@ function GeographyApp() {
   if (screen === "createProfile") {
     const canCreate = newProfileName.trim().length > 0;
     const isFirstProfile = profiles.length === 0;
+    const randomPin = useMemo(() => String(Math.floor(1000 + Math.random() * 9000)), []);
+    const pinToUse = newProfilePin || randomPin;
+    const pinValid = pinToUse.length === 4 && /^\d{4}$/.test(pinToUse);
     return (
       <div style={styles.app}>
         <style>{globalCSS}</style>
@@ -1199,26 +1237,23 @@ function GeographyApp() {
           <h1 style={{ fontFamily: "'Lilita One', sans-serif", fontSize: 36, color: "#86EFAC", marginBottom: 8 }}>
             {isFirstProfile ? "Create Your Explorer" : "New Explorer"}
           </h1>
-          <p style={{ fontSize: 17, color: "#94A3B8", marginBottom: 36, maxWidth: 380 }}>
-            {isFirstProfile ? "Pick a name and avatar to start your journey" : "Add a new explorer to the team"}
+          <p style={{ fontSize: 17, color: "#94A3B8", marginBottom: 32, maxWidth: 380 }}>
+            {isFirstProfile ? "Pick a name, avatar, and secret PIN" : "Add a new explorer to the team"}
           </p>
-          <div style={{ width: "100%", maxWidth: 400, marginBottom: 28 }}>
+
+          {/* Name input */}
+          <div style={{ width: "100%", maxWidth: 400, marginBottom: 24 }}>
             <input
               type="text" placeholder="Your name..." value={newProfileName}
-              onChange={e => setNewProfileName(e.target.value.slice(0, 20))}
-              autoFocus
-              style={{
-                width: "100%", padding: "18px 24px", borderRadius: 18, fontSize: 20, fontWeight: 600,
-                border: "2px solid rgba(34,197,94,0.3)", background: "rgba(255,255,255,0.05)",
-                color: "#F1F5F9", fontFamily: "'Fredoka', sans-serif", outline: "none",
-                textAlign: "center", transition: "border 0.3s",
-              }}
-              onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.6)"}
-              onBlur={e => e.target.style.borderColor = "rgba(34,197,94,0.3)"}
+              onChange={e => setNewProfileName(e.target.value.slice(0, 20))} autoFocus
+              style={{ width: "100%", padding: "18px 24px", borderRadius: 18, fontSize: 20, fontWeight: 600, border: "2px solid rgba(34,197,94,0.3)", background: "rgba(255,255,255,0.05)", color: "#F1F5F9", fontFamily: "'Fredoka', sans-serif", outline: "none", textAlign: "center", transition: "border 0.3s" }}
+              onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.6)"} onBlur={e => e.target.style.borderColor = "rgba(34,197,94,0.3)"}
             />
           </div>
-          <p style={{ fontSize: 15, color: "#64748B", marginBottom: 16 }}>Choose your avatar</p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, maxWidth: 340, marginBottom: 36 }}>
+
+          {/* Avatar picker */}
+          <p style={{ fontSize: 15, color: "#64748B", marginBottom: 12 }}>Choose your avatar</p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, maxWidth: 340, marginBottom: 28 }}>
             {EXPLORER_AVATARS.map(a => (
               <button key={a.id} onClick={() => setNewProfileAvatar(a.id)} style={{
                 width: 72, height: 72, borderRadius: 18, border: `2.5px solid ${newProfileAvatar === a.id ? "#22C55E" : "rgba(255,255,255,0.08)"}`,
@@ -1232,49 +1267,53 @@ function GeographyApp() {
             ))}
           </div>
 
-          {/* Group code input for onboarding */}
+          {/* Secret PIN */}
+          <div style={{ width: "100%", maxWidth: 400, marginBottom: 24, padding: "18px 20px", borderRadius: 18, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            <p style={{ fontSize: 14, color: "#94A3B8", marginBottom: 10 }}>🔒 Pick your secret PIN <span style={{ fontSize: 12, color: "#475569" }}>(use it to sign in on other devices)</span></p>
+            <input
+              type="tel" placeholder="• • • •" value={newProfilePin || randomPin} maxLength={4}
+              onChange={e => setNewProfilePin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              style={{ width: 160, padding: "14px 16px", borderRadius: 14, border: "2px solid rgba(34,197,94,0.2)", background: "rgba(255,255,255,0.05)", color: "#22C55E", fontSize: 32, fontFamily: "'Lilita One', sans-serif", outline: "none", textAlign: "center", letterSpacing: 8 }}
+              onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.5)"} onBlur={e => e.target.style.borderColor = "rgba(34,197,94,0.2)"}
+            />
+            <p style={{ fontSize: 11, color: "#475569", marginTop: 8 }}>We suggest {randomPin} — or pick your own lucky number!</p>
+          </div>
+
+          {/* Group code (optional, first profile only) */}
           {isFirstProfile && (
-            <div style={{ width: "100%", maxWidth: 400, marginBottom: 24 }}>
+            <div style={{ width: "100%", maxWidth: 400, marginBottom: 28 }}>
               <p style={{ fontSize: 13, color: "#64748B", marginBottom: 8 }}>Have a group code? (optional)</p>
-              <input
-                type="text" placeholder="TERRA-1234" value={onboardingJoinCode}
+              <input type="text" placeholder="TERRA-1234" value={onboardingJoinCode}
                 onChange={e => setOnboardingJoinCode(e.target.value.toUpperCase().slice(0, 10))}
-                style={{
-                  width: "100%", padding: "14px 20px", borderRadius: 14, fontSize: 17, fontWeight: 600,
-                  border: "1.5px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)",
-                  color: "#F1F5F9", fontFamily: "'Fredoka', sans-serif", outline: "none",
-                  textAlign: "center", letterSpacing: 2, transition: "border 0.3s",
-                }}
-                onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.4)"}
-                onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.1)"}
+                style={{ width: "100%", padding: "14px 20px", borderRadius: 14, fontSize: 17, fontWeight: 600, border: "1.5px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "#F1F5F9", fontFamily: "'Fredoka', sans-serif", outline: "none", textAlign: "center", letterSpacing: 2, transition: "border 0.3s" }}
+                onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.4)"} onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.1)"}
               />
             </div>
           )}
 
           <div style={{ display: "flex", gap: 14 }}>
             {!isFirstProfile && (
-              <button onClick={() => { setScreen("home"); setNewProfileName(""); setNewProfileAvatar("pilot"); }} style={{
+              <button onClick={() => { setScreen("home"); setNewProfileName(""); setNewProfileAvatar("pilot"); setNewProfilePin(""); }} style={{
                 padding: "16px 32px", borderRadius: 99, background: "rgba(255,255,255,0.06)",
                 border: "2px solid rgba(255,255,255,0.1)", color: "#94A3B8", fontSize: 18,
                 fontWeight: 700, cursor: "pointer", fontFamily: "'Fredoka', sans-serif",
               }}>Cancel</button>
             )}
-            <button disabled={!canCreate} onClick={async () => {
-              const profile = await addProfile(newProfileName.trim(), newProfileAvatar);
-              // Auto-join group if code was provided during onboarding
+            <button disabled={!canCreate || !pinValid} onClick={async () => {
+              const profile = await addProfile(newProfileName.trim(), newProfileAvatar, pinToUse);
               if (onboardingJoinCode && onboardingJoinCode.trim()) {
                 const ok = await joinGroup(onboardingJoinCode.trim());
                 if (ok && profile) syncProfile(profile);
               }
-              setNewProfileName(""); setNewProfileAvatar("pilot"); setOnboardingJoinCode("");
+              setNewProfileName(""); setNewProfileAvatar("pilot"); setNewProfilePin(""); setOnboardingJoinCode("");
               setScreen("home");
             }} style={{
               padding: "16px 48px", borderRadius: 99,
-              background: canCreate ? "linear-gradient(135deg, #22C55E, #16A34A)" : "rgba(255,255,255,0.06)",
-              border: "none", color: canCreate ? "#fff" : "#475569", fontSize: 18,
-              fontWeight: 700, cursor: canCreate ? "pointer" : "default",
+              background: canCreate && pinValid ? "linear-gradient(135deg, #22C55E, #16A34A)" : "rgba(255,255,255,0.06)",
+              border: "none", color: canCreate && pinValid ? "#fff" : "#475569", fontSize: 18,
+              fontWeight: 700, cursor: canCreate && pinValid ? "pointer" : "default",
               fontFamily: "'Fredoka', sans-serif",
-              boxShadow: canCreate ? "0 4px 24px rgba(34,197,94,0.4)" : "none",
+              boxShadow: canCreate && pinValid ? "0 4px 24px rgba(34,197,94,0.4)" : "none",
               transition: "all 0.3s",
             }}>Start Exploring →</button>
           </div>
@@ -1345,63 +1384,136 @@ function GeographyApp() {
       <div style={styles.app}>
         <style>{globalCSS}</style>
         <div style={{ ...styles.container, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", textAlign: "center", paddingTop: 40 }}>
-          {/* Logo */}
-          <div style={{ marginBottom: 24, animation: "float 4s ease-in-out infinite" }}>
-            <svg width={100} height={100} viewBox="0 0 80 80" style={{ filter: "drop-shadow(0 0 20px rgba(34,197,94,0.4))" }}>
-              <defs><linearGradient id="welcomeGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#22C55E" /><stop offset="100%" stopColor="#16A34A" /></linearGradient></defs>
-              <circle cx="40" cy="40" r="36" fill="url(#welcomeGrad)" />
-              <ellipse cx="28" cy="30" rx="12" ry="14" fill="rgba(255,255,255,0.2)" transform="rotate(-15 28 30)" />
-              <ellipse cx="52" cy="44" rx="10" ry="8" fill="rgba(255,255,255,0.15)" transform="rotate(10 52 44)" />
-              <ellipse cx="36" cy="55" rx="7" ry="5" fill="rgba(255,255,255,0.12)" />
-              <ellipse cx="40" cy="40" rx="14" ry="34" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" />
-              <ellipse cx="40" cy="40" rx="28" ry="34" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
-              <line x1="4" y1="40" x2="76" y2="40" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" />
-            </svg>
-          </div>
-          {/* Wordmark */}
-          <h1 style={{ fontFamily: "'Lilita One', sans-serif", fontSize: 52, lineHeight: 1.1, marginBottom: 16, letterSpacing: -1, animation: "popIn 0.6s 0.2s ease-out both" }}>
-            <span style={{ color: "#22C55E" }}>terra</span><span style={{ color: "#FFFFFF" }}>nio</span>
-          </h1>
-          <p style={{ fontSize: 19, color: "#94A3B8", marginBottom: 12, fontWeight: 500, maxWidth: 360, lineHeight: 1.5, animation: "slideUp 0.6s 0.3s ease-out both" }}>The fun way to learn geography with family & friends</p>
 
-          {/* Feature highlights */}
-          <div style={{ display: "flex", gap: 24, marginTop: 20, marginBottom: 40, animation: "slideUp 0.6s 0.4s ease-out both" }}>
-            {[
-              { emoji: "🗺️", label: "Explore maps" },
-              { emoji: "🏆", label: "Quiz battles" },
-              { emoji: "📊", label: "Leaderboards" },
-            ].map((f, i) => (
-              <div key={i} style={{ textAlign: "center" }}>
-                <div style={{ fontSize: 32, marginBottom: 6 }}>{f.emoji}</div>
-                <div style={{ fontSize: 12, color: "#64748B", fontWeight: 500 }}>{f.label}</div>
+          {/* Sign-in flow: enter code */}
+          {onboardingStep === "enterCode" && (
+            <>
+              <div style={{ fontSize: 56, marginBottom: 16 }}>🔑</div>
+              <h2 style={{ fontFamily: "'Lilita One', sans-serif", fontSize: 28, color: "#86EFAC", marginBottom: 8 }}>Welcome Back!</h2>
+              <p style={{ fontSize: 15, color: "#94A3B8", marginBottom: 28, maxWidth: 320, lineHeight: 1.5 }}>Enter your group code to find your profile</p>
+              {groupError && <div style={{ padding: "10px 20px", borderRadius: 12, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", color: "#F87171", fontSize: 14, marginBottom: 16, maxWidth: 320 }}>{groupError}</div>}
+              <input type="text" placeholder="TERRA-1234" value={onboardingJoinCode}
+                onChange={e => setOnboardingJoinCode(e.target.value.toUpperCase().slice(0, 10))} autoFocus
+                style={{ width: "100%", maxWidth: 320, padding: "16px 20px", borderRadius: 14, border: "2px solid rgba(34,197,94,0.3)", background: "rgba(255,255,255,0.05)", color: "#F1F5F9", fontSize: 22, fontFamily: "'Fredoka', sans-serif", outline: "none", textAlign: "center", letterSpacing: 2, marginBottom: 20 }}
+                onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.6)"} onBlur={e => e.target.style.borderColor = "rgba(34,197,94,0.3)"}
+              />
+              <div style={{ display: "flex", gap: 12, width: "100%", maxWidth: 320 }}>
+                <button onClick={() => { setOnboardingStep(null); setOnboardingJoinCode(""); setGroupError(""); }} style={{ flex: 1, padding: "14px", borderRadius: 14, background: "rgba(255,255,255,0.06)", border: "1.5px solid rgba(255,255,255,0.1)", color: "#94A3B8", fontSize: 16, fontWeight: 600, cursor: "pointer", fontFamily: "'Fredoka', sans-serif" }}>Back</button>
+                <button disabled={!onboardingJoinCode.trim() || groupLoading} onClick={async () => {
+                  setGroupError("");
+                  const data = await getGroupMembers(onboardingJoinCode.trim());
+                  if (data && data.members.length > 0) { setOnboardingGroupData(data); setOnboardingStep("pickMember"); }
+                  else { setGroupError(data ? "No members in this group yet. Tap Back and create a new profile." : "Group not found. Check the code."); }
+                }} style={{ flex: 1, padding: "14px", borderRadius: 14, background: onboardingJoinCode.trim() ? "linear-gradient(135deg, #22C55E, #16A34A)" : "rgba(255,255,255,0.06)", border: "none", color: onboardingJoinCode.trim() ? "#fff" : "#475569", fontSize: 16, fontWeight: 700, cursor: onboardingJoinCode.trim() ? "pointer" : "default", fontFamily: "'Fredoka', sans-serif" }}>
+                  {groupLoading ? "Looking..." : "Next →"}
+                </button>
               </div>
-            ))}
-          </div>
+            </>
+          )}
 
-          {/* CTA buttons */}
-          <button onClick={() => { setOnboardingJoinCode(""); setScreen("createProfile"); }} style={{
-            width: "100%", maxWidth: 340, padding: "20px 32px", borderRadius: 99,
-            background: "linear-gradient(135deg, #22C55E, #16A34A)", border: "none",
-            color: "#fff", fontSize: 20, fontWeight: 700, cursor: "pointer",
-            fontFamily: "'Fredoka', sans-serif", boxShadow: "0 4px 24px rgba(34,197,94,0.4)",
-            animation: "slideUp 0.6s 0.5s ease-out both",
-          }}>Start Playing →</button>
+          {/* Sign-in flow: pick your name */}
+          {onboardingStep === "pickMember" && onboardingGroupData && (
+            <>
+              <div style={{ fontSize: 48, marginBottom: 12 }}>👋</div>
+              <h2 style={{ fontFamily: "'Lilita One', sans-serif", fontSize: 24, color: "#86EFAC", marginBottom: 4 }}>{onboardingGroupData.name}</h2>
+              <p style={{ fontSize: 15, color: "#94A3B8", marginBottom: 24 }}>Who are you?</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", maxWidth: 340, marginBottom: 20 }}>
+                {onboardingGroupData.members.map((m, i) => {
+                  const av = EXPLORER_AVATARS.find(a => a.id === m.avatarId) || EXPLORER_AVATARS[0];
+                  return (
+                    <button key={m.name + i} onClick={() => { setOnboardingSelectedMember(m); setOnboardingPinInput(""); setOnboardingStep("enterPin"); }} style={{
+                      display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", borderRadius: 16,
+                      background: "rgba(255,255,255,0.04)", border: "1.5px solid rgba(255,255,255,0.08)",
+                      cursor: "pointer", color: "#F1F5F9", fontFamily: "'Fredoka', sans-serif", transition: "all 0.2s",
+                    }}>
+                      <span style={{ fontSize: 28 }}>{av.emoji}</span>
+                      <div style={{ flex: 1, textAlign: "left" }}>
+                        <div style={{ fontSize: 17, fontWeight: 700 }}>{m.name}</div>
+                        <div style={{ fontSize: 12, color: "#64748B" }}>{getExplorerLevel(m.xp || 0).icon} {getExplorerLevel(m.xp || 0).name} · ⚡ {m.xp || 0} XP</div>
+                      </div>
+                      <span style={{ color: "#64748B" }}>→</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <button onClick={() => { setOnboardingStep("enterCode"); setOnboardingGroupData(null); }} style={{ padding: "10px 24px", borderRadius: 99, background: "transparent", border: "none", color: "#64748B", fontSize: 14, cursor: "pointer", fontFamily: "'Fredoka', sans-serif" }}>← Back</button>
+            </>
+          )}
 
-          <button onClick={() => {
-            const code = window.prompt ? window.prompt("Enter your group code:") : null;
-            if (code && code.trim()) {
-              setOnboardingJoinCode(code.trim().toUpperCase());
-              setScreen("createProfile");
-            } else {
-              setOnboardingJoinCode(""); setScreen("createProfile");
-            }
-          }} style={{
-            marginTop: 14, padding: "12px 24px", borderRadius: 99,
-            background: "transparent", border: "none",
-            color: "#64748B", fontSize: 15, fontWeight: 600, cursor: "pointer",
-            fontFamily: "'Fredoka', sans-serif",
-            animation: "slideUp 0.6s 0.6s ease-out both",
-          }}>I have a group code</button>
+          {/* Sign-in flow: enter PIN */}
+          {onboardingStep === "enterPin" && onboardingSelectedMember && (
+            <>
+              <span style={{ fontSize: 56, marginBottom: 12 }}>{(EXPLORER_AVATARS.find(a => a.id === onboardingSelectedMember.avatarId) || EXPLORER_AVATARS[0]).emoji}</span>
+              <h2 style={{ fontFamily: "'Lilita One', sans-serif", fontSize: 28, color: "#86EFAC", marginBottom: 4 }}>Hey, {onboardingSelectedMember.name}!</h2>
+              <p style={{ fontSize: 15, color: "#94A3B8", marginBottom: 24 }}>Enter your secret PIN</p>
+              {groupError && <div style={{ padding: "10px 20px", borderRadius: 12, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", color: "#F87171", fontSize: 14, marginBottom: 16, maxWidth: 300 }}>{groupError}</div>}
+              <input type="tel" placeholder="• • • •" value={onboardingPinInput} maxLength={4}
+                onChange={e => setOnboardingPinInput(e.target.value.replace(/\D/g, "").slice(0, 4))} autoFocus
+                style={{ width: 180, padding: "18px 20px", borderRadius: 18, border: "2px solid rgba(34,197,94,0.3)", background: "rgba(255,255,255,0.05)", color: "#F1F5F9", fontSize: 32, fontFamily: "'Lilita One', sans-serif", outline: "none", textAlign: "center", letterSpacing: 8, marginBottom: 24 }}
+                onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.6)"} onBlur={e => e.target.style.borderColor = "rgba(34,197,94,0.3)"}
+              />
+              <div style={{ display: "flex", gap: 12, width: "100%", maxWidth: 300 }}>
+                <button onClick={() => { setOnboardingStep("pickMember"); setOnboardingPinInput(""); setGroupError(""); }} style={{ flex: 1, padding: "14px", borderRadius: 14, background: "rgba(255,255,255,0.06)", border: "1.5px solid rgba(255,255,255,0.1)", color: "#94A3B8", fontSize: 16, fontWeight: 600, cursor: "pointer", fontFamily: "'Fredoka', sans-serif" }}>Back</button>
+                <button disabled={onboardingPinInput.length < 4 || groupLoading} onClick={async () => {
+                  setGroupError("");
+                  const profile = await signInWithPin(onboardingJoinCode.trim(), onboardingSelectedMember.name, onboardingPinInput);
+                  if (profile) {
+                    // Create local profile from Firebase data and join group
+                    const localProfile = await addProfile(profile.name, profile.avatarId, profile.pin, profile.xp, profile.quizCount, profile.bestStreak);
+                    await joinGroup(onboardingJoinCode.trim());
+                    setOnboardingStep(null); setOnboardingJoinCode(""); setOnboardingGroupData(null);
+                    setOnboardingSelectedMember(null); setOnboardingPinInput("");
+                    setScreen("home");
+                  }
+                }} style={{ flex: 1, padding: "14px", borderRadius: 14, background: onboardingPinInput.length === 4 ? "linear-gradient(135deg, #22C55E, #16A34A)" : "rgba(255,255,255,0.06)", border: "none", color: onboardingPinInput.length === 4 ? "#fff" : "#475569", fontSize: 16, fontWeight: 700, cursor: onboardingPinInput.length === 4 ? "pointer" : "default", fontFamily: "'Fredoka', sans-serif" }}>
+                  {groupLoading ? "Signing in..." : "Let's Go! →"}
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* Default welcome — no sign-in step active */}
+          {!onboardingStep && (
+            <>
+              <div style={{ marginBottom: 24, animation: "float 4s ease-in-out infinite" }}>
+                <svg width={100} height={100} viewBox="0 0 80 80" style={{ filter: "drop-shadow(0 0 20px rgba(34,197,94,0.4))" }}>
+                  <defs><linearGradient id="welcomeGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#22C55E" /><stop offset="100%" stopColor="#16A34A" /></linearGradient></defs>
+                  <circle cx="40" cy="40" r="36" fill="url(#welcomeGrad)" />
+                  <ellipse cx="28" cy="30" rx="12" ry="14" fill="rgba(255,255,255,0.2)" transform="rotate(-15 28 30)" />
+                  <ellipse cx="52" cy="44" rx="10" ry="8" fill="rgba(255,255,255,0.15)" transform="rotate(10 52 44)" />
+                  <ellipse cx="36" cy="55" rx="7" ry="5" fill="rgba(255,255,255,0.12)" />
+                  <ellipse cx="40" cy="40" rx="14" ry="34" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" />
+                  <ellipse cx="40" cy="40" rx="28" ry="34" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+                  <line x1="4" y1="40" x2="76" y2="40" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" />
+                </svg>
+              </div>
+              <h1 style={{ fontFamily: "'Lilita One', sans-serif", fontSize: 52, lineHeight: 1.1, marginBottom: 16, letterSpacing: -1, animation: "popIn 0.6s 0.2s ease-out both" }}>
+                <span style={{ color: "#22C55E" }}>terra</span><span style={{ color: "#FFFFFF" }}>nio</span>
+              </h1>
+              <p style={{ fontSize: 19, color: "#94A3B8", marginBottom: 12, fontWeight: 500, maxWidth: 360, lineHeight: 1.5, animation: "slideUp 0.6s 0.3s ease-out both" }}>The fun way to learn geography with family & friends</p>
+              <div style={{ display: "flex", gap: 24, marginTop: 20, marginBottom: 40, animation: "slideUp 0.6s 0.4s ease-out both" }}>
+                {[{ emoji: "🗺️", label: "Explore maps" }, { emoji: "🏆", label: "Quiz battles" }, { emoji: "📊", label: "Leaderboards" }].map((f, i) => (
+                  <div key={i} style={{ textAlign: "center" }}>
+                    <div style={{ fontSize: 32, marginBottom: 6 }}>{f.emoji}</div>
+                    <div style={{ fontSize: 12, color: "#64748B", fontWeight: 500 }}>{f.label}</div>
+                  </div>
+                ))}
+              </div>
+              <button onClick={() => { setOnboardingJoinCode(""); setNewProfilePin(""); setScreen("createProfile"); }} style={{
+                width: "100%", maxWidth: 340, padding: "20px 32px", borderRadius: 99,
+                background: "linear-gradient(135deg, #22C55E, #16A34A)", border: "none",
+                color: "#fff", fontSize: 20, fontWeight: 700, cursor: "pointer",
+                fontFamily: "'Fredoka', sans-serif", boxShadow: "0 4px 24px rgba(34,197,94,0.4)",
+                animation: "slideUp 0.6s 0.5s ease-out both",
+              }}>Start Playing →</button>
+              <button onClick={() => { setOnboardingStep("enterCode"); setOnboardingJoinCode(""); setGroupError(""); }} style={{
+                marginTop: 14, padding: "12px 24px", borderRadius: 99,
+                background: "transparent", border: "none",
+                color: "#64748B", fontSize: 15, fontWeight: 600, cursor: "pointer",
+                fontFamily: "'Fredoka', sans-serif", animation: "slideUp 0.6s 0.6s ease-out both",
+              }}>I already have an account</button>
+            </>
+          )}
         </div>
       </div>
     );
