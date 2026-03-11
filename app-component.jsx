@@ -1064,6 +1064,7 @@ function GeographyApp() {
   // Profile creation state
   const [newProfileName, setNewProfileName] = useState("");
   const [newProfileAvatar, setNewProfileAvatar] = useState("pilot");
+  const [onboardingJoinCode, setOnboardingJoinCode] = useState("");
   const [managingProfiles, setManagingProfiles] = useState(false);
 
   const startQuiz = (regions) => {
@@ -1189,20 +1190,21 @@ function GeographyApp() {
   // ─── CREATE PROFILE ────────────────────────────────────────────────────
   if (screen === "createProfile") {
     const canCreate = newProfileName.trim().length > 0;
+    const isFirstProfile = profiles.length === 0;
     return (
       <div style={styles.app}>
         <style>{globalCSS}</style>
         <div style={{ ...styles.container, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", textAlign: "center" }}>
           <div style={{ fontSize: 72, marginBottom: 20, animation: "float 3s ease-in-out infinite" }}>🧭</div>
           <h1 style={{ fontFamily: "'Lilita One', sans-serif", fontSize: 36, color: "#86EFAC", marginBottom: 8 }}>
-            {profiles.length === 0 ? "Welcome to Terranio!" : "New Explorer"}
+            {isFirstProfile ? "Create Your Explorer" : "New Explorer"}
           </h1>
           <p style={{ fontSize: 17, color: "#94A3B8", marginBottom: 36, maxWidth: 380 }}>
-            {profiles.length === 0 ? "Create your explorer profile to start your journey" : "Add a new explorer to the team"}
+            {isFirstProfile ? "Pick a name and avatar to start your journey" : "Add a new explorer to the team"}
           </p>
           <div style={{ width: "100%", maxWidth: 400, marginBottom: 28 }}>
             <input
-              type="text" placeholder="Explorer name..." value={newProfileName}
+              type="text" placeholder="Your name..." value={newProfileName}
               onChange={e => setNewProfileName(e.target.value.slice(0, 20))}
               autoFocus
               style={{
@@ -1229,8 +1231,28 @@ function GeographyApp() {
               </button>
             ))}
           </div>
+
+          {/* Group code input for onboarding */}
+          {isFirstProfile && (
+            <div style={{ width: "100%", maxWidth: 400, marginBottom: 24 }}>
+              <p style={{ fontSize: 13, color: "#64748B", marginBottom: 8 }}>Have a group code? (optional)</p>
+              <input
+                type="text" placeholder="TERRA-1234" value={onboardingJoinCode}
+                onChange={e => setOnboardingJoinCode(e.target.value.toUpperCase().slice(0, 10))}
+                style={{
+                  width: "100%", padding: "14px 20px", borderRadius: 14, fontSize: 17, fontWeight: 600,
+                  border: "1.5px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)",
+                  color: "#F1F5F9", fontFamily: "'Fredoka', sans-serif", outline: "none",
+                  textAlign: "center", letterSpacing: 2, transition: "border 0.3s",
+                }}
+                onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.4)"}
+                onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.1)"}
+              />
+            </div>
+          )}
+
           <div style={{ display: "flex", gap: 14 }}>
-            {profiles.length > 0 && (
+            {!isFirstProfile && (
               <button onClick={() => { setScreen("home"); setNewProfileName(""); setNewProfileAvatar("pilot"); }} style={{
                 padding: "16px 32px", borderRadius: 99, background: "rgba(255,255,255,0.06)",
                 border: "2px solid rgba(255,255,255,0.1)", color: "#94A3B8", fontSize: 18,
@@ -1238,8 +1260,13 @@ function GeographyApp() {
               }}>Cancel</button>
             )}
             <button disabled={!canCreate} onClick={async () => {
-              await addProfile(newProfileName.trim(), newProfileAvatar);
-              setNewProfileName(""); setNewProfileAvatar("pilot");
+              const profile = await addProfile(newProfileName.trim(), newProfileAvatar);
+              // Auto-join group if code was provided during onboarding
+              if (onboardingJoinCode && onboardingJoinCode.trim()) {
+                const ok = await joinGroup(onboardingJoinCode.trim());
+                if (ok && profile) syncProfile(profile);
+              }
+              setNewProfileName(""); setNewProfileAvatar("pilot"); setOnboardingJoinCode("");
               setScreen("home");
             }} style={{
               padding: "16px 48px", borderRadius: 99,
@@ -1312,11 +1339,72 @@ function GeographyApp() {
     );
   }
 
-  // ─── REDIRECT TO CREATE PROFILE IF NONE EXIST ──────────────────────────
-  if (!activeProfile && screen === "home") {
-    if (profiles.length === 0) {
-      return (() => { setTimeout(() => setScreen("createProfile"), 0); return null; })();
-    }
+  // ─── WELCOME SCREEN (first-time visitors only) ─────────────────────────
+  if (!activeProfile && screen === "home" && profiles.length === 0) {
+    return (
+      <div style={styles.app}>
+        <style>{globalCSS}</style>
+        <div style={{ ...styles.container, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", textAlign: "center", paddingTop: 40 }}>
+          {/* Logo */}
+          <div style={{ marginBottom: 24, animation: "float 4s ease-in-out infinite" }}>
+            <svg width={100} height={100} viewBox="0 0 80 80" style={{ filter: "drop-shadow(0 0 20px rgba(34,197,94,0.4))" }}>
+              <defs><linearGradient id="welcomeGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#22C55E" /><stop offset="100%" stopColor="#16A34A" /></linearGradient></defs>
+              <circle cx="40" cy="40" r="36" fill="url(#welcomeGrad)" />
+              <ellipse cx="28" cy="30" rx="12" ry="14" fill="rgba(255,255,255,0.2)" transform="rotate(-15 28 30)" />
+              <ellipse cx="52" cy="44" rx="10" ry="8" fill="rgba(255,255,255,0.15)" transform="rotate(10 52 44)" />
+              <ellipse cx="36" cy="55" rx="7" ry="5" fill="rgba(255,255,255,0.12)" />
+              <ellipse cx="40" cy="40" rx="14" ry="34" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" />
+              <ellipse cx="40" cy="40" rx="28" ry="34" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+              <line x1="4" y1="40" x2="76" y2="40" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" />
+            </svg>
+          </div>
+          {/* Wordmark */}
+          <h1 style={{ fontFamily: "'Lilita One', sans-serif", fontSize: 52, lineHeight: 1.1, marginBottom: 16, letterSpacing: -1, animation: "popIn 0.6s 0.2s ease-out both" }}>
+            <span style={{ color: "#22C55E" }}>terra</span><span style={{ color: "#FFFFFF" }}>nio</span>
+          </h1>
+          <p style={{ fontSize: 19, color: "#94A3B8", marginBottom: 12, fontWeight: 500, maxWidth: 360, lineHeight: 1.5, animation: "slideUp 0.6s 0.3s ease-out both" }}>The fun way to learn geography with family & friends</p>
+
+          {/* Feature highlights */}
+          <div style={{ display: "flex", gap: 24, marginTop: 20, marginBottom: 40, animation: "slideUp 0.6s 0.4s ease-out both" }}>
+            {[
+              { emoji: "🗺️", label: "Explore maps" },
+              { emoji: "🏆", label: "Quiz battles" },
+              { emoji: "📊", label: "Leaderboards" },
+            ].map((f, i) => (
+              <div key={i} style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 32, marginBottom: 6 }}>{f.emoji}</div>
+                <div style={{ fontSize: 12, color: "#64748B", fontWeight: 500 }}>{f.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* CTA buttons */}
+          <button onClick={() => { setOnboardingJoinCode(""); setScreen("createProfile"); }} style={{
+            width: "100%", maxWidth: 340, padding: "20px 32px", borderRadius: 99,
+            background: "linear-gradient(135deg, #22C55E, #16A34A)", border: "none",
+            color: "#fff", fontSize: 20, fontWeight: 700, cursor: "pointer",
+            fontFamily: "'Fredoka', sans-serif", boxShadow: "0 4px 24px rgba(34,197,94,0.4)",
+            animation: "slideUp 0.6s 0.5s ease-out both",
+          }}>Start Playing →</button>
+
+          <button onClick={() => {
+            const code = window.prompt ? window.prompt("Enter your group code:") : null;
+            if (code && code.trim()) {
+              setOnboardingJoinCode(code.trim().toUpperCase());
+              setScreen("createProfile");
+            } else {
+              setOnboardingJoinCode(""); setScreen("createProfile");
+            }
+          }} style={{
+            marginTop: 14, padding: "12px 24px", borderRadius: 99,
+            background: "transparent", border: "none",
+            color: "#64748B", fontSize: 15, fontWeight: 600, cursor: "pointer",
+            fontFamily: "'Fredoka', sans-serif",
+            animation: "slideUp 0.6s 0.6s ease-out both",
+          }}>I have a group code</button>
+        </div>
+      </div>
+    );
   }
 
   // ─── LEADERBOARD ────────────────────────────────────────────────────────
@@ -1377,7 +1465,7 @@ function GeographyApp() {
               <p style={{ fontSize: 15, color: "#94A3B8", textAlign: "center", maxWidth: 320, lineHeight: 1.5 }}>Create a group and share the code with family & friends. Scores sync across all devices in real-time!</p>
 
               {groupError && <div style={{ padding: "12px 20px", borderRadius: 14, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", color: "#F87171", fontSize: 14, textAlign: "center", width: "100%", maxWidth: 320, lineHeight: 1.5 }}>
-                {groupError === "offline" ? "Leaderboard requires an internet connection. Please open Terranio from your home screen or visit crumystone.github.io/terranio" : groupError}
+                {groupError === "offline" ? "Leaderboard requires an internet connection. Please open terranio.net to use this feature." : groupError}
               </div>}
 
               {/* Create Group Flow */}
@@ -1522,7 +1610,7 @@ function GeographyApp() {
       <div style={styles.app}>
         <style>{globalCSS}</style>
         {/* Leaderboard button in top-left */}
-        {profiles.length > 1 && (
+        {activeProfile && (
           <div style={{ position: "fixed", top: 16, left: 16, zIndex: 100 }}>
             <button onClick={() => setScreen("leaderboard")} style={{
               display: "flex", alignItems: "center", gap: 10, padding: "6px 14px 6px 8px",
