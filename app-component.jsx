@@ -1100,6 +1100,7 @@ function GeographyApp() {
   const [onboardingGroupData, setOnboardingGroupData] = useState(null); // { name, members }
   const [onboardingSelectedMember, setOnboardingSelectedMember] = useState(null);
   const [onboardingPinInput, setOnboardingPinInput] = useState("");
+  const randomPin = useMemo(() => String(Math.floor(1000 + Math.random() * 9000)), []);
   const [managingProfiles, setManagingProfiles] = useState(false);
 
   const startQuiz = (regions) => {
@@ -1226,7 +1227,6 @@ function GeographyApp() {
   if (screen === "createProfile") {
     const canCreate = newProfileName.trim().length > 0;
     const isFirstProfile = profiles.length === 0;
-    const randomPin = useMemo(() => String(Math.floor(1000 + Math.random() * 9000)), []);
     const pinToUse = newProfilePin || randomPin;
     const pinValid = pinToUse.length === 4 && /^\d{4}$/.test(pinToUse);
     return (
