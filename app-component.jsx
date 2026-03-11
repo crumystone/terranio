@@ -1095,6 +1095,7 @@ function GeographyApp() {
   const [newProfileName, setNewProfileName] = useState("");
   const [newProfileAvatar, setNewProfileAvatar] = useState("pilot");
   const [newProfilePin, setNewProfilePin] = useState("");
+  const [pinEdited, setPinEdited] = useState(false);
   const [onboardingJoinCode, setOnboardingJoinCode] = useState("");
   const [onboardingStep, setOnboardingStep] = useState(null); // null | "enterCode" | "pickMember" | "enterPin"
   const [onboardingGroupData, setOnboardingGroupData] = useState(null); // { name, members }
@@ -1227,7 +1228,7 @@ function GeographyApp() {
   if (screen === "createProfile") {
     const canCreate = newProfileName.trim().length > 0;
     const isFirstProfile = profiles.length === 0;
-    const pinToUse = newProfilePin || randomPin;
+    const pinToUse = pinEdited ? newProfilePin : randomPin;
     const pinValid = pinToUse.length === 4 && /^\d{4}$/.test(pinToUse);
     return (
       <div style={styles.app}>
@@ -1271,8 +1272,8 @@ function GeographyApp() {
           <div style={{ width: "100%", maxWidth: 400, marginBottom: 24, padding: "18px 20px", borderRadius: 18, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
             <p style={{ fontSize: 14, color: "#94A3B8", marginBottom: 10 }}>🔒 Pick your secret PIN <span style={{ fontSize: 12, color: "#475569" }}>(use it to sign in on other devices)</span></p>
             <input
-              type="tel" placeholder="• • • •" value={newProfilePin || randomPin} maxLength={4}
-              onChange={e => setNewProfilePin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+              type="tel" placeholder="• • • •" value={pinToUse} maxLength={4}
+              onChange={e => { setPinEdited(true); setNewProfilePin(e.target.value.replace(/\D/g, "").slice(0, 4)); }}
               style={{ width: 160, padding: "14px 16px", borderRadius: 14, border: "2px solid rgba(34,197,94,0.2)", background: "rgba(255,255,255,0.05)", color: "#22C55E", fontSize: 32, fontFamily: "'Lilita One', sans-serif", outline: "none", textAlign: "center", letterSpacing: 8 }}
               onFocus={e => e.target.style.borderColor = "rgba(34,197,94,0.5)"} onBlur={e => e.target.style.borderColor = "rgba(34,197,94,0.2)"}
             />
@@ -1293,7 +1294,7 @@ function GeographyApp() {
 
           <div style={{ display: "flex", gap: 14 }}>
             {!isFirstProfile && (
-              <button onClick={() => { setScreen("home"); setNewProfileName(""); setNewProfileAvatar("pilot"); setNewProfilePin(""); }} style={{
+              <button onClick={() => { setScreen("home"); setNewProfileName(""); setNewProfileAvatar("pilot"); setNewProfilePin(""); setPinEdited(false); }} style={{
                 padding: "16px 32px", borderRadius: 99, background: "rgba(255,255,255,0.06)",
                 border: "2px solid rgba(255,255,255,0.1)", color: "#94A3B8", fontSize: 18,
                 fontWeight: 700, cursor: "pointer", fontFamily: "'Fredoka', sans-serif",
@@ -1305,7 +1306,7 @@ function GeographyApp() {
                 const ok = await joinGroup(onboardingJoinCode.trim());
                 if (ok && profile) syncProfile(profile);
               }
-              setNewProfileName(""); setNewProfileAvatar("pilot"); setNewProfilePin(""); setOnboardingJoinCode("");
+              setNewProfileName(""); setNewProfileAvatar("pilot"); setNewProfilePin(""); setPinEdited(false); setOnboardingJoinCode("");
               setScreen("home");
             }} style={{
               padding: "16px 48px", borderRadius: 99,
@@ -1499,7 +1500,7 @@ function GeographyApp() {
                   </div>
                 ))}
               </div>
-              <button onClick={() => { setOnboardingJoinCode(""); setNewProfilePin(""); setScreen("createProfile"); }} style={{
+              <button onClick={() => { setOnboardingJoinCode(""); setNewProfilePin(""); setPinEdited(false); setScreen("createProfile"); }} style={{
                 width: "100%", maxWidth: 340, padding: "20px 32px", borderRadius: 99,
                 background: "linear-gradient(135deg, #22C55E, #16A34A)", border: "none",
                 color: "#fff", fontSize: 20, fontWeight: 700, cursor: "pointer",
