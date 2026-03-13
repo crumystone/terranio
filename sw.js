@@ -1,4 +1,4 @@
-const CACHE_NAME = 'terranio-v2';
+const CACHE_NAME = 'terranio-v5';
 const ASSETS = [
   '/terranio/',
   '/terranio/index.html',
