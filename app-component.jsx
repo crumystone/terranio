@@ -2060,15 +2060,6 @@ function GeographyApp() {
               <div style={{ fontSize: 14, color: "#94A3B8", lineHeight: 1.4 }}>10 questions, earn XP!</div>
             </button>
           </div>
-          <button onClick={() => setScreen("tutorSelect")} style={{ width: "100%", maxWidth: 480, padding: "20px 24px", borderRadius: 22, background: "linear-gradient(160deg, rgba(139,92,246,0.10), rgba(124,58,237,0.05))", border: "2px solid rgba(139,92,246,0.2)", cursor: "pointer", display: "flex", alignItems: "center", gap: 16, transition: "all 0.3s ease", color: "#F1F5F9", fontFamily: "'Fredoka', sans-serif", animation: "slideUp 0.6s 0.2s ease-out both", marginTop: 16 }}
-            onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.borderColor = "rgba(139,92,246,0.4)"; }}
-            onMouseLeave={e => { e.currentTarget.style.transform = "translateY(0)"; e.currentTarget.style.borderColor = "rgba(139,92,246,0.2)"; }}>
-            <div style={{ fontSize: 36 }}>📚</div>
-            <div style={{ textAlign: "left" }}>
-              <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Lilita One', sans-serif" }}>Practice</div>
-              <div style={{ fontSize: 13, color: "#94A3B8" }}>No pressure, track your mastery</div>
-            </div>
-          </button>
         </div>
       </div>
     );
